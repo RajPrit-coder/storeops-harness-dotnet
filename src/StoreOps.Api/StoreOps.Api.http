@@ -1,0 +1,68 @@
+# Click "Send request" above each request (Visual Studio / VS Code REST Client).
+# Every StoreOps endpoint needs a bearer token; these are the seeded dev tokens (Modules/Staff/StaffSeedData.cs).
+# If you started the app with the "IIS Express" profile, change baseUrl to http://localhost:60406
+
+@baseUrl = http://localhost:5000
+@manager = dev-token-store-manager
+@associate = dev-token-associate
+
+### 1. List activities
+GET {{baseUrl}}/api/activities
+Authorization: Bearer {{associate}}
+
+### 2. Create an activity (copy the "id" from the response for the next requests)
+POST {{baseUrl}}/api/activities
+Authorization: Bearer {{associate}}
+Content-Type: application/json
+
+{
+  "title": "Planogram reset aisle 4",
+  "programmeId": "prg-001",
+  "priority": "HIGH",
+  "category": "PLANOGRAM"
+}
+
+### 3. Get one activity (replace the id)
+GET {{baseUrl}}/api/activities/act-REPLACE-ME
+Authorization: Bearer {{associate}}
+
+### 4. Update an activity - BLOCKED also raises an alert for the store manager
+PATCH {{baseUrl}}/api/activities/act-REPLACE-ME
+Authorization: Bearer {{associate}}
+Content-Type: application/json
+
+{
+  "status": "BLOCKED"
+}
+
+### 5. Delete an activity (owner or store manager only)
+DELETE {{baseUrl}}/api/activities/act-REPLACE-ME
+Authorization: Bearer {{associate}}
+
+### 6. List programmes
+GET {{baseUrl}}/api/programmes
+Authorization: Bearer {{manager}}
+
+### 7. Create a programme
+POST {{baseUrl}}/api/programmes
+Authorization: Bearer {{manager}}
+Content-Type: application/json
+
+{
+  "name": "Store refit",
+  "startsOn": "2027-01-04"
+}
+
+### 8. Add a member to a programme
+POST {{baseUrl}}/api/programmes/prg-001/members
+Authorization: Bearer {{manager}}
+Content-Type: application/json
+
+{
+  "userId": "usr-dl-001",
+  "role": "DEPARTMENT_LEAD"
+}
+
+### 9. Alerts for the signed-in user
+GET {{baseUrl}}/api/alerts
+Authorization: Bearer {{manager}}

@@ -1,0 +1,102 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{json,xml,props,targets,csproj,slnx,yml,yaml}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.cs]
+# --- Style rules enforced at build time (EnforceCodeStyleInBuild) ---
+csharp_style_namespace_declarations = file_scoped:warning
+dotnet_diagnostic.IDE0161.severity = warning   # file-scoped namespaces
+dotnet_diagnostic.IDE0005.severity = warning   # unused usings
+dotnet_diagnostic.IDE0055.severity = warning   # formatting
+dotnet_diagnostic.IDE0011.severity = warning   # braces required
+csharp_prefer_braces = true:warning
+dotnet_diagnostic.IDE0040.severity = warning   # explicit accessibility modifiers
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:warning
+dotnet_diagnostic.IDE0044.severity = warning   # readonly fields
+dotnet_style_readonly_field = true:warning
+dotnet_diagnostic.IDE0059.severity = warning   # unnecessary assignment
+dotnet_diagnostic.IDE0060.severity = warning   # unused parameter
+
+csharp_style_var_for_built_in_types = true:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = true:suggestion
+csharp_using_directive_placement = outside_namespace:warning
+dotnet_sort_system_directives_first = true
+
+# --- Naming ---
+dotnet_diagnostic.IDE1006.severity = warning   # naming rules below, enforced at build time
+
+# Constants and static readonly fields: PascalCase (more specific, so it wins over _camelCase).
+dotnet_naming_rule.constants_pascal.symbols = constant_fields
+dotnet_naming_rule.constants_pascal.style = pascal_case
+dotnet_naming_rule.constants_pascal.severity = warning
+dotnet_naming_symbols.constant_fields.applicable_kinds = field
+dotnet_naming_symbols.constant_fields.required_modifiers = const
+
+dotnet_naming_rule.static_readonly_pascal.symbols = static_readonly_fields
+dotnet_naming_rule.static_readonly_pascal.style = pascal_case
+dotnet_naming_rule.static_readonly_pascal.severity = warning
+dotnet_naming_symbols.static_readonly_fields.applicable_kinds = field
+dotnet_naming_symbols.static_readonly_fields.required_modifiers = static, readonly
+
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+
+# Private instance fields: _camelCase.
+dotnet_naming_rule.private_fields_underscore.symbols = private_fields
+dotnet_naming_rule.private_fields_underscore.style = underscore_camel
+dotnet_naming_rule.private_fields_underscore.severity = warning
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_style.underscore_camel.required_prefix = _
+dotnet_naming_style.underscore_camel.capitalization = camel_case
+
+dotnet_naming_rule.interfaces_prefixed.symbols = interfaces
+dotnet_naming_rule.interfaces_prefixed.style = prefix_i
+dotnet_naming_rule.interfaces_prefixed.severity = warning
+dotnet_naming_symbols.interfaces.applicable_kinds = interface
+dotnet_naming_style.prefix_i.required_prefix = I
+dotnet_naming_style.prefix_i.capitalization = pascal_case
+
+# Banned APIs (BannedSymbols.txt) are errors, not warnings.
+dotnet_diagnostic.RS0030.severity = error
+
+# --- StyleCop (spec §3.2 ".NET: StyleCop + nullable annotations") ---
+# Rules below are turned off deliberately; every other SA rule is a build error via TreatWarningsAsErrors.
+dotnet_diagnostic.SA1101.severity = none   # 'this.' prefix: conflicts with the _camelCase field convention
+dotnet_diagnostic.SA1309.severity = none   # fields may start with '_' (our naming rule requires it)
+dotnet_diagnostic.SA1633.severity = none   # no per-file license header in this repo
+dotnet_diagnostic.SA1600.severity = none   # XML docs are required where they add meaning, not on every member
+dotnet_diagnostic.SA1601.severity = none
+dotnet_diagnostic.SA1602.severity = none
+dotnet_diagnostic.SA1611.severity = none   # parameter docs: not required when a <summary> exists
+dotnet_diagnostic.SA1615.severity = none   # return-value docs: same
+dotnet_diagnostic.SA1618.severity = none   # type-parameter docs: same
+dotnet_diagnostic.SA1623.severity = none   # property summary wording ("Gets ...")
+dotnet_diagnostic.SA1629.severity = none   # doc text ending punctuation
+dotnet_diagnostic.SA1402.severity = none   # a module's contract types live together in *Contracts.cs
+dotnet_diagnostic.SA1649.severity = none   # same: file name follows the module concept, not the first type
+
+[tests/**.cs]
+# Test method names use Method_Scenario_Expected underscores.
+dotnet_diagnostic.CA1707.severity = none
+
+[{src/StoreOps.Api/Shared/**.cs,tests/StoreOps.Api.Tests/Shared/**.cs}]
+# 'Shared' is a VB keyword (CA1716). The spec's src/shared/ folder name wins: StoreOps has no VB consumers.
+dotnet_diagnostic.CA1716.severity = none
+
+[src/StoreOps.Api/Shared/Errors/**.cs]
+# The error hierarchy is named AppError / NotFoundError / ... per the spec's error contract,
+# not *Exception, so CA1710 ("identifiers should have correct suffix") is disabled for it.
+dotnet_diagnostic.CA1710.severity = none

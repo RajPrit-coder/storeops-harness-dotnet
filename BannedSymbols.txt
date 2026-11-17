@@ -1,0 +1,11 @@
+M:System.Exception.#ctor;Throw an AppError subtype (StoreOps.Api.Shared.Errors) instead of a raw Exception
+M:System.Exception.#ctor(System.String);Throw an AppError subtype (StoreOps.Api.Shared.Errors) instead of a raw Exception
+M:System.Exception.#ctor(System.String,System.Exception);Throw an AppError subtype (StoreOps.Api.Shared.Errors) instead of a raw Exception
+T:System.ApplicationException;Throw an AppError subtype (StoreOps.Api.Shared.Errors) instead
+T:System.InvalidOperationException;Throw an AppError subtype (StoreOps.Api.Shared.Errors) instead
+T:System.ArgumentException;Throw ValidationError instead
+T:System.ArgumentNullException;Throw ValidationError instead
+T:System.ArgumentOutOfRangeException;Throw ValidationError instead
+T:System.Collections.Generic.KeyNotFoundException;Throw NotFoundError instead
+T:System.NotImplementedException;Return a stub result or throw an AppError subtype instead
+T:System.NotSupportedException;Throw an AppError subtype (StoreOps.Api.Shared.Errors) instead
