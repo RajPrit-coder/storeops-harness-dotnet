@@ -1,0 +1,9 @@
+services:
+  storeops-api:
+    build: .
+    image: storeops-api
+    ports:
+      - "5000:8080"
+    environment:
+      # Production-like: every request needs a bearer token (no Development auto-login).
+      ASPNETCORE_ENVIRONMENT: Production

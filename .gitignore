@@ -7,3 +7,6 @@ obj/
 TestResults/
 coverage/
 *.trx
+
+# Harness working files during a run (spec §7). Sprint results are archived to .harness/reviews/ (committed).
+.harness/output/

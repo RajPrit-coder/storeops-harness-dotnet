@@ -26,6 +26,13 @@ curl -H "Authorization: Bearer dev-token-associate" http://localhost:5000/api/ac
 
 `usr-as-002` is an inactive associate, so its token is rejected. `dev-token-expired` is also rejected. Seeded programmes are `prg-001` (store-001) and `prg-002` (store-002).
 
+## Development harness
+
+New features are added through the Claude Code harness, not by hand. Start a Claude Code session in this
+repo and type `@planner <feature>`; see [CLAUDE.md](CLAUDE.md) for the flow,
+[.harness/skills/](.harness/skills/README.md) for the rules the agents follow, and
+[.harness/reviews/](.harness/reviews/README.md) for the audit trail of every accepted sprint.
+
 ## Layout (spec §7, adapted to .NET)
 
 ```

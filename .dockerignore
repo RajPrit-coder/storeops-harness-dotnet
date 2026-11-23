@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+TestResults/
+.vs/
+.git/
+.harness/
+docs/
+# The image ships its own .NET 10 SDK; the local SDK pin would fail if the image's feature band differs.
+global.json

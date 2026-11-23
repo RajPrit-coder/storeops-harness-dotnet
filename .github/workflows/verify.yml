@@ -1,0 +1,19 @@
+# CI gate before main. Runs the SAME script the harness Evaluator runs (CLAUDE.md §9),
+# so a sprint the harness accepted cannot be rejected here for a different reason.
+name: verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Build, format, test, coverage gate
+        shell: pwsh
+        run: ./eng/verify.ps1

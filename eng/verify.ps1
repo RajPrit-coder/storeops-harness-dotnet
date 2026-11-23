@@ -9,7 +9,10 @@
   3. dotnet test + coverage    endpoint, service, architecture tests (coverlet, Cobertura)
   4. eng/check-coverage.ps1    spec §3.6 thresholds per layer
   Stops at the first failing step and exits non-zero.
+  Defaults to Release so it never collides with a Debug build that Visual Studio / IIS Express has locked.
 #>
+param([string] $Configuration = 'Release')
+
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
 Push-Location $root
@@ -17,9 +20,9 @@ try {
     $results = Join-Path $root 'TestResults' (Get-Date -Format 'yyyyMMdd-HHmmss')
 
     $steps = @(
-        @{ Name = 'build';    Run = { dotnet build StoreOps.slnx --nologo } }
+        @{ Name = 'build';    Run = { dotnet build StoreOps.slnx -c $Configuration --nologo } }
         @{ Name = 'format';   Run = { dotnet format StoreOps.slnx --verify-no-changes } }
-        @{ Name = 'test';     Run = { dotnet test StoreOps.slnx --no-build --nologo --settings coverage.runsettings --collect 'XPlat Code Coverage' --results-directory $results } }
+        @{ Name = 'test';     Run = { dotnet test StoreOps.slnx -c $Configuration --no-build --nologo --settings coverage.runsettings --collect 'XPlat Code Coverage' --results-directory $results } }
         @{ Name = 'coverage'; Run = { & (Join-Path $PSScriptRoot 'check-coverage.ps1') -ResultsDirectory $results } }
     )
 
