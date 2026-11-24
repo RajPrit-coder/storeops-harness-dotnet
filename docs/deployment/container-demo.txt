@@ -1,0 +1,31 @@
+# OUTPUT RECORDING ONLY - do not paste into a shell. To reproduce, run:
+#   powershell -ExecutionPolicy Bypass -File docs\deployment\demo-bulk-status.ps1
+
+# StoreOps API in a Podman container — demonstration run of PATCH /api/activities/bulk-status
+# 2026-11-24T15:27:46Z   image: localhost/storeops-api:latest   ASPNETCORE_ENVIRONMENT=Production
+
+$ podman ps
+storeops-harness-dotnet-storeops-api-1  localhost/storeops-api:latest  Up 29 seconds  0.0.0.0:5000->8080/tcp
+
+## 1. Without a token (Production: auth required)
+$ curl -s http://localhost:5000/api/activities
+{"error":{"code":"UNAUTHORIZED","message":"Authentication is required.","statusCode":401}}  [HTTP 401]
+
+## 2. Create two activities in store-001 and one in store-002
+{"id":"act-df47d2fdce864d7bab55d323f5398979","storeId":"store-001","programmeId":null,"title":"Restock dairy aisle","description":null,"status":"TODO","priority":"HIGH","category":"RESTOCKING","department":null,"assigneeId":null,"ownerId":"usr-sm-001","dueAt":null,"createdAt":"2026-11-24T15:27:47.8110334+00:00","updatedAt":"2026-11-24T15:27:47.8110334+00:00"}
+{"id":"act-7c6f794808ee4325a037b87dc44c909c","storeId":"store-001","programmeId":null,"title":"Planogram reset aisle 4","description":null,"status":"TODO","priority":"MEDIUM","category":"PLANOGRAM","department":null,"assigneeId":null,"ownerId":"usr-sm-001","dueAt":null,"createdAt":"2026-11-24T15:27:47.9152407+00:00","updatedAt":"2026-11-24T15:27:47.9152407+00:00"}
+{"id":"act-6ccf14a6f97049dfb9d269af40588ba7","storeId":"store-002","programmeId":null,"title":"Store 002 audit","description":null,"status":"TODO","priority":"MEDIUM","category":"AUDIT","department":null,"assigneeId":null,"ownerId":"usr-sm-002","dueAt":null,"createdAt":"2026-11-24T15:27:48.0432599+00:00","updatedAt":"2026-11-24T15:27:48.0432599+00:00"}
+
+## 3. Shift handover: bulk-mark all of them (plus an unknown id) as DONE
+$ curl -X PATCH http://localhost:5000/api/activities/bulk-status -H "Authorization: Bearer dev-token-store-manager" -d '{"status":"DONE","activityIds":["act-df47d2fdce864d7bab55d323f5398979","act-7c6f794808ee4325a037b87dc44c909c","act-6ccf14a6f97049dfb9d269af40588ba7","act-does-not-exist"],"note":"Evening shift handover"}'
+{"status":"DONE","requested":4,"updated":2,"unchanged":0,"failed":2,"results":[{"activityId":"act-df47d2fdce864d7bab55d323f5398979","outcome":"UPDATED","previousStatus":"TODO","newStatus":"DONE","error":null},{"activityId":"act-7c6f794808ee4325a037b87dc44c909c","outcome":"UPDATED","previousStatus":"TODO","newStatus":"DONE","error":null},{"activityId":"act-6ccf14a6f97049dfb9d269af40588ba7","outcome":"FAILED","previousStatus":null,"newStatus":null,"error":{"code":"NOT_FOUND","message":"Activity 'act-6ccf14a6f97049dfb9d269af40588ba7' was not found."}},{"activityId":"act-does-not-exist","outcome":"FAILED","previousStatus":null,"newStatus":null,"error":{"code":"NOT_FOUND","message":"Activity 'act-does-not-exist' was not found."}}]}
+[HTTP 200]
+
+## 4. Audit entry for an updated activity
+$ curl http://localhost:5000/api/activities/act-df47d2fdce864d7bab55d323f5398979/audit
+[{"id":"aud-cf7c1d4704974dae8127aefbfa9e481e","activityId":"act-df47d2fdce864d7bab55d323f5398979","previousStatus":"TODO","newStatus":"DONE","changedBy":"usr-sm-001","source":"BULK_STATUS_UPDATE","note":"Evening shift handover","occurredAt":"2026-11-24T15:27:48.9743776+00:00"}]
+[HTTP 200]
+
+## 5. store-002's activity was not touched
+{"id":"act-6ccf14a6f97049dfb9d269af40588ba7","storeId":"store-002","programmeId":null,"title":"Store 002 audit","description":null,"status":"TODO","priority":"MEDIUM","category":"AUDIT","department":null,"assigneeId":null,"ownerId":"usr-sm-002","dueAt":null,"createdAt":"2026-11-24T15:27:48.0432599+00:00","updatedAt":"2026-11-24T15:27:48.0432599+00:00"}
+[HTTP 200]

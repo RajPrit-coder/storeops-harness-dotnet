@@ -27,3 +27,20 @@ will ask about them.*
 | D4 | Hard gates are commands (tests, build, git status), checklist items need cited evidence or FAIL | pure LLM scoring | same check results ⇒ same verdict; leniency cannot pass a boundary break | the architecture tests cover what they claim (proven by probes) |
 | D5 | Generator may not touch the checks (HG-A2 on protected paths) | trust the Generator | the cheapest way for an AI to "pass" is to weaken the gate | the harness files are committed before a run |
 | D6 | Deployment: local Docker | Azure App Service | spec minimum, no cloud subscription needed | Docker Desktop can be installed on the machine |
+
+## 2026-11-23 — Demonstration run (shift handover bulk update)
+- 3 sprints, 17 ACs, every sprint PASS in iteration 1 (100 / 100 / 94). No hard gate ever failed.
+- Sprint 3 lost 6 points on C2 (per-item rejections not asserted unchanged). Because C2 is not critical the
+  verdict was PASS and the loop moved on; I applied the fix by hand afterwards (`f3a2bc5`).
+- **Insight:** my verdict formula answers "is this good enough to accept?" but not "is anything left to fix?".
+  Those need separate routing — see the improvement in `REFLECTION.md`.
+- The Planner's spec was better than I expected: it fixed the per-item check order (NOT_FOUND → FORBIDDEN →
+  UNCHANGED → BUSINESS_RULE_VIOLATION) up front, which removed a whole class of ambiguous test cases.
+
+## 2026-11-24 — Deployment
+- Docker Desktop was not an option; Podman 5.8 ran the same `Dockerfile` and `docker-compose.yml` unchanged
+  (OCI-compatible). Two decisions: exclude `global.json` from the build context (the SDK pin would break on a
+  different image feature band) and run the container as `Production` so it needs real tokens.
+- First attempt at "evidence" was a raw output transcript, which a reader pasted into PowerShell and got
+  errors. **Insight:** evidence meant to be reproduced must be a script, not a log —
+  `docs/deployment/demo-bulk-status.ps1`.
