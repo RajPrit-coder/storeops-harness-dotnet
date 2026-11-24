@@ -431,6 +431,8 @@ public sealed class ActivityBulkStatusRoutesTests : IDisposable
         (await _manager.PatchJsonAsync($"/api/activities/{a.Id}", new { status = "DONE" })).Dispose();
         (await _manager.PatchJsonAsync($"/api/activities/{b.Id}", new { status = "BLOCKED" })).Dispose();
         Assert.Empty(_audit.All); // the single PATCH writes no audit entries
+        var doneA = await _manager.GetJsonAsync<ActivityDto>($"/api/activities/{a.Id}");
+        _recorder.Clear();
 
         using var response = await _manager.PatchJsonAsync(BulkUrl, new { status = "BLOCKED", activityIds = new[] { a.Id, b.Id, c.Id, x.Id } });
 
@@ -444,6 +446,12 @@ public sealed class ActivityBulkStatusRoutesTests : IDisposable
             AssertItem(root.GetProperty("results")[2], c.Id, "UPDATED", "TODO", "BLOCKED");
             AssertFailedItem(root.GetProperty("results")[3], x.Id, ErrorCodes.NotFound);
         }
+
+        var storedA = await _manager.GetJsonAsync<ActivityDto>($"/api/activities/{a.Id}");
+        Assert.Equal((ActivityStatus.Done, doneA.UpdatedAt), (storedA.Status, storedA.UpdatedAt));
+        var storedX = await otherStore.GetJsonAsync<ActivityDto>($"/api/activities/{x.Id}");
+        Assert.Equal((ActivityStatus.Todo, x.UpdatedAt), (storedX.Status, storedX.UpdatedAt));
+        Assert.Equal(c.Id, Assert.Single(_recorder.Events).ActivityId);
 
         Assert.Empty(await GetAuditAsync(_manager, a.Id));
         Assert.Empty(await GetAuditAsync(_manager, b.Id));

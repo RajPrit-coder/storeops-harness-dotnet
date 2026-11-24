@@ -390,9 +390,11 @@ public sealed class ActivityBulkStatusServiceTests
         var b = await CreateAsync("Stuck delivery");
         var c = await CreateAsync("Pending audit");
         var x = await _ctx.Activities.CreateAsync(TestUsers.OtherStoreManager, Request("Store 2 restock"), default);
-        await SetStatusAsync(a.Id, ActivityStatus.Done);
+        var doneA = await SetStatusAsync(a.Id, ActivityStatus.Done);
         await SetStatusAsync(b.Id, ActivityStatus.Blocked);
         Assert.Empty(_ctx.ActivityAudit.All); // the single PATCH writes no audit entries
+        _ctx.Time.Now = _ctx.Time.Now.AddMinutes(5);
+        _ctx.Events.Clear();
 
         var result = await BulkAsync(TestUsers.StoreManager, ActivityStatus.Blocked, a.Id, b.Id, c.Id, x.Id);
 
@@ -401,6 +403,13 @@ public sealed class ActivityBulkStatusServiceTests
         Assert.Equal(BulkStatusOutcome.Unchanged, result.Results[1].Outcome);
         Assert.Equal(BulkStatusOutcome.Updated, result.Results[2].Outcome);
         AssertFailed(result.Results[3], x.Id, ErrorCodes.NotFound);
+
+        var storedA = await FindAsync(a.Id);
+        Assert.Equal((ActivityStatus.Done, doneA.UpdatedAt), (storedA.Status, storedA.UpdatedAt));
+        var storedX = await FindAsync(x.Id);
+        Assert.Equal((ActivityStatus.Todo, x.UpdatedAt), (storedX.Status, storedX.UpdatedAt));
+        Assert.Equal(c.Id, Assert.Single(_ctx.Events.Of<ActivityStatusChanged>()).ActivityId);
+        Assert.Single(_ctx.Events.Published);
 
         Assert.Empty(await _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, a.Id, default));
         Assert.Empty(await _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, b.Id, default));
