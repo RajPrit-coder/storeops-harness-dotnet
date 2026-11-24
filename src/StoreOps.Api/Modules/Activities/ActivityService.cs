@@ -18,6 +18,9 @@ internal sealed class ActivityService(
     IEventBus eventBus,
     TimeProvider timeProvider) : IActivityQueries
 {
+    /// <summary>Upper bound on the number of activities one bulk status request may change.</summary>
+    public const int MaxBulkActivityIds = 50;
+
     public async Task<ActivityDto?> FindByIdAsync(string activityId, CancellationToken cancellationToken)
         => (await repository.GetByIdAsync(activityId, cancellationToken))?.ToDto();
 
@@ -146,6 +149,86 @@ internal sealed class ActivityService(
         await repository.DeleteAsync(activity.Id, cancellationToken);
         await eventBus.PublishAsync(
             new ActivityDeleted(activity.Id, activity.StoreId, user.UserId, timeProvider.GetUtcNow()), cancellationToken);
+    }
+
+    /// <summary>
+    /// Shift handover: sets every listed activity of the caller's store to DONE or BLOCKED in one request.
+    /// The whole request is validated before any activity is touched; ids are then processed one at a time,
+    /// in request order. An activity already in the target status is reported UNCHANGED and left untouched;
+    /// every real change is saved and announced with its own <see cref="ActivityStatusChanged"/>.
+    /// </summary>
+    public async Task<BulkStatusUpdateResponse> BulkUpdateStatusAsync(
+        CurrentUser user, BulkStatusUpdateRequest request, CancellationToken cancellationToken)
+    {
+        var target = ValidateBulkTargetStatus(request.Status);
+        var activityIds = ValidateBulkActivityIds(request.ActivityIds);
+
+        var results = new List<BulkStatusItemResult>(activityIds.Count);
+        foreach (var activityId in activityIds)
+        {
+            results.Add(await ApplyBulkStatusAsync(user, activityId, target, cancellationToken));
+        }
+
+        return new BulkStatusUpdateResponse(
+            target,
+            results.Count,
+            results.Count(r => r.Outcome == BulkStatusOutcome.Updated),
+            results.Count(r => r.Outcome == BulkStatusOutcome.Unchanged),
+            results.Count(r => r.Outcome == BulkStatusOutcome.Failed),
+            results);
+    }
+
+    private static ActivityStatus ValidateBulkTargetStatus(ActivityStatus? status) => status switch
+    {
+        ActivityStatus.Done or ActivityStatus.Blocked => status.Value,
+        null => throw new ValidationError("status is required and must be DONE or BLOCKED.", "status"),
+        _ => throw new ValidationError("status must be DONE or BLOCKED for a bulk status update.", "status"),
+    };
+
+    private static List<string> ValidateBulkActivityIds(IReadOnlyList<string?>? activityIds)
+    {
+        if (activityIds is null || activityIds.Count == 0)
+        {
+            throw new ValidationError("activityIds must list at least one activity id.", "activityIds");
+        }
+
+        if (activityIds.Count > MaxBulkActivityIds)
+        {
+            throw new ValidationError($"activityIds may list at most {MaxBulkActivityIds} activity ids.", "activityIds");
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var ids = new List<string>(activityIds.Count);
+        foreach (var activityId in activityIds)
+        {
+            if (string.IsNullOrWhiteSpace(activityId))
+            {
+                throw new ValidationError("activityIds must not contain blank ids.", "activityIds");
+            }
+
+            if (!seen.Add(activityId))
+            {
+                throw new ValidationError($"activityIds lists '{activityId}' more than once.", "activityIds");
+            }
+
+            ids.Add(activityId);
+        }
+
+        return ids;
+    }
+
+    /// <summary>One bulk item: store-scoped lookup, then either UNCHANGED or the regular single-activity update.</summary>
+    private async Task<BulkStatusItemResult> ApplyBulkStatusAsync(
+        CurrentUser user, string activityId, ActivityStatus target, CancellationToken cancellationToken)
+    {
+        var current = await GetVisibleAsync(user, activityId, cancellationToken);
+        if (current.Status == target)
+        {
+            return new BulkStatusItemResult(activityId, BulkStatusOutcome.Unchanged, current.Status, current.Status, null);
+        }
+
+        var updated = await UpdateAsync(user, activityId, new UpdateActivityRequest(target, null, null, null), cancellationToken);
+        return new BulkStatusItemResult(activityId, BulkStatusOutcome.Updated, current.Status, updated.Status, null);
     }
 
     private async Task<IReadOnlyList<ActivityDto>> ListAsync(

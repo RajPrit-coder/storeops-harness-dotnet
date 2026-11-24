@@ -30,6 +30,14 @@ public enum ActivityCategory
     General,
 }
 
+/// <summary>Per-item outcome of <c>PATCH /api/activities/bulk-status</c>. Wire values: UPDATED | UNCHANGED | FAILED.</summary>
+public enum BulkStatusOutcome
+{
+    Updated,
+    Unchanged,
+    Failed,
+}
+
 /// <summary>Read-only activity lookups for other modules (e.g. reports), implemented by ActivityService.</summary>
 public interface IActivityQueries
 {
