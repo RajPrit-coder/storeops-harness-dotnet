@@ -15,6 +15,29 @@ each new feature in the same way every time.
 
 Agents say **what to do**. Skills say **what to know**. `CLAUDE.md` says **who goes next**.
 
+### Same idea, as a restaurant kitchen
+| Kitchen | In this repo |
+|---|---|
+| **Agents = each person's job** | |
+| Waiter: takes the order and writes the ticket | `planner.agent.md`: feature request → spec + sprint contracts |
+| Cook: cooks what the ticket says | `generator.agent.md`: writes the code and tests for one contract |
+| Taster: "send it out" or "redo it, too salty" | `evaluator.agent.md`: runs the checks, writes `VERDICT: PASS/FAIL` |
+| Manager: writes tonight's logbook | `monitor.agent.md`: run log + quality trend |
+| **Skills = the kitchen handbook** (everyone reads it) | |
+| Menu | `app-context`: what StoreOps is, its modules and rules |
+| Hygiene rules: never share a board for raw meat and vegetables | `architecture-principles`: use service contracts, not another module's repository; use `AppError`, not `throw new Exception` |
+| How to check a dish properly | `how-to-test`: assert the business rule, not just HTTP 200 |
+| Taster's scorecard | `grading-criteria`: 40 / 35 / 25 weights + hard gates |
+| **`CLAUDE.md` = the order flow** (cooks nothing itself) | |
+| Order → customer confirms → cook → taste → redo (max 3, then call the owner) → log → serve | Planner → `APPROVED` → Generator → Evaluator → retry (max 3, then `escalation.md`) → Monitor → commit |
+
+The cook and the taster read the same hygiene rules, which is how the taster catches the cook breaking them.
+
+**Why keep them separate?** Each file changes for one reason only:
+- **New menu:** edit a skill.
+- **Stricter taster:** edit `evaluator.agent.md`.
+- **Extra tasting step:** edit `CLAUDE.md`.
+
 ## Sample scenario (simple, made up)
 Feature: *"Add a `priority` filter to GET /api/activities"*
 
