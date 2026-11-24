@@ -7,6 +7,7 @@ public static class ActivitiesModule
     public static IServiceCollection AddActivitiesModule(this IServiceCollection services)
     {
         services.AddSingleton<IActivityRepository, InMemoryActivityRepository>();
+        services.AddSingleton<IActivityAuditRepository, InMemoryActivityAuditRepository>();
         services.AddScoped<ActivityService>();
         services.AddScoped<IActivityQueries>(sp => sp.GetRequiredService<ActivityService>());
         return services;

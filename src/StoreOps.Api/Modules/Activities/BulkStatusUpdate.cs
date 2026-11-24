@@ -4,11 +4,13 @@ namespace StoreOps.Api.Modules.Activities;
 
 /// <summary>
 /// Body of <c>PATCH /api/activities/bulk-status</c>. Fields are nullable so the service owns validation
-/// (status must be DONE or BLOCKED; 1–50 distinct, non-blank activity ids).
+/// (status must be DONE or BLOCKED; 1–50 distinct, non-blank activity ids; optional handover note of at most
+/// 500 characters, stored on the audit entry of every activity the request changes).
 /// </summary>
 internal sealed record BulkStatusUpdateRequest(
     ActivityStatus? Status,
-    IReadOnlyList<string?>? ActivityIds);
+    IReadOnlyList<string?>? ActivityIds,
+    string? Note = null);
 
 /// <summary>Response of <c>PATCH /api/activities/bulk-status</c>: one result per requested id, in request order.</summary>
 internal sealed record BulkStatusUpdateResponse(

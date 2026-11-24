@@ -9,7 +9,8 @@ namespace StoreOps.Api.Tests.Modules.Activities;
 
 /// <summary>
 /// Business rules of the shift-handover bulk status update (sprint 1: validation and happy path;
-/// sprint 2: per-item failures for store scope, associate permissions and the reopen rule).
+/// sprint 2: per-item failures for store scope, associate permissions and the reopen rule; sprint 3: the audit
+/// trail of every updated activity and the handover note).
 /// </summary>
 public sealed class ActivityBulkStatusServiceTests
 {
@@ -358,7 +359,156 @@ public sealed class ActivityBulkStatusServiceTests
         Assert.Empty(_ctx.Events.Published);
     }
 
+    [Fact]
+    public async Task BulkStatus_AC3_1_EachUpdatedActivity_GetsExactlyOneAuditEntry_MatchingItsNewUpdatedAt()
+    {
+        var a = await CreateAsync("Restock aisle 1");
+        var b = await CreateAsync("Restock aisle 2");
+        Assert.Empty(await _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, a.Id, default));
+        _ctx.Time.Now = _ctx.Time.Now.AddMinutes(5);
+
+        var result = await BulkAsync(TestUsers.StoreManager, ActivityStatus.Done, a.Id, b.Id);
+
+        Assert.Equal(2, result.Updated);
+        foreach (var id in new[] { a.Id, b.Id })
+        {
+            var entry = Assert.Single(await _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, id, default));
+            AssertAuditEntry(entry, id, ActivityStatus.Todo, ActivityStatus.Done, "usr-sm-001", note: null);
+            Assert.Equal((await FindAsync(id)).UpdatedAt, entry.OccurredAt);
+            Assert.Equal(_ctx.Time.Now, entry.OccurredAt);
+        }
+
+        Assert.Equal(2, _ctx.ActivityAudit.All.Count);
+        Assert.Equal([a.Id, b.Id], _ctx.ActivityAudit.All.Select(e => e.ActivityId));
+        Assert.All(_ctx.ActivityAudit.All, e => Assert.Equal("store-001", e.StoreId));
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_2_UnchangedAndFailedItems_GetNoAuditEntry_OnlyTheUpdatedOneDoes()
+    {
+        var a = await CreateAsync("Finished restock");
+        var b = await CreateAsync("Stuck delivery");
+        var c = await CreateAsync("Pending audit");
+        var x = await _ctx.Activities.CreateAsync(TestUsers.OtherStoreManager, Request("Store 2 restock"), default);
+        await SetStatusAsync(a.Id, ActivityStatus.Done);
+        await SetStatusAsync(b.Id, ActivityStatus.Blocked);
+        Assert.Empty(_ctx.ActivityAudit.All); // the single PATCH writes no audit entries
+
+        var result = await BulkAsync(TestUsers.StoreManager, ActivityStatus.Blocked, a.Id, b.Id, c.Id, x.Id);
+
+        Assert.Equal((4, 1, 1, 2), (result.Requested, result.Updated, result.Unchanged, result.Failed));
+        AssertFailed(result.Results[0], a.Id, ErrorCodes.BusinessRuleViolation);
+        Assert.Equal(BulkStatusOutcome.Unchanged, result.Results[1].Outcome);
+        Assert.Equal(BulkStatusOutcome.Updated, result.Results[2].Outcome);
+        AssertFailed(result.Results[3], x.Id, ErrorCodes.NotFound);
+
+        Assert.Empty(await _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, a.Id, default));
+        Assert.Empty(await _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, b.Id, default));
+        var entry = Assert.Single(await _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, c.Id, default));
+        AssertAuditEntry(entry, c.Id, ActivityStatus.Todo, ActivityStatus.Blocked, "usr-sm-001", note: null);
+        Assert.Empty(await _ctx.Activities.ListAuditAsync(TestUsers.OtherStoreManager, x.Id, default));
+        Assert.Equal(c.Id, Assert.Single(_ctx.ActivityAudit.All).ActivityId);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_3_HandoverNote_IsStoredOnEveryUpdatedEntry_AndAnOverLongNoteIsRejected()
+    {
+        const string Note = "Aisle 7 shelf damaged, waiting on maintenance";
+        var a = await CreateAsync("Restock aisle 7");
+        var b = await CreateAsync("Facing aisle 7");
+
+        var first = await _ctx.Activities.BulkUpdateStatusAsync(
+            TestUsers.DepartmentLead, new BulkStatusUpdateRequest(ActivityStatus.Blocked, [a.Id, b.Id], Note), default);
+
+        Assert.Equal(2, first.Updated);
+        foreach (var id in new[] { a.Id, b.Id })
+        {
+            var entry = Assert.Single(await _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, id, default));
+            AssertAuditEntry(entry, id, ActivityStatus.Todo, ActivityStatus.Blocked, "usr-dl-001", Note);
+        }
+
+        var blockedAt = (await FindAsync(a.Id)).UpdatedAt;
+        _ctx.Time.Now = _ctx.Time.Now.AddMinutes(1);
+        _ctx.Events.Clear();
+
+        var error = await Assert.ThrowsAsync<ValidationError>(() => _ctx.Activities.BulkUpdateStatusAsync(
+            TestUsers.StoreManager, new BulkStatusUpdateRequest(ActivityStatus.Done, [a.Id], new string('x', 501)), default));
+
+        Assert.Equal(("note", ErrorCodes.ValidationFailed), (error.Field, error.Code));
+        var storedA = await FindAsync(a.Id);
+        Assert.Equal((ActivityStatus.Blocked, blockedAt), (storedA.Status, storedA.UpdatedAt));
+        Assert.Single(await _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, a.Id, default));
+        Assert.Equal(2, _ctx.ActivityAudit.All.Count);
+        Assert.Empty(_ctx.Events.Published);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_3_NoteOfExactly500Characters_IsAccepted_AndStoredVerbatim()
+    {
+        var note = string.Concat(Enumerable.Repeat("Shelf 7 ", 62)) + "ok!!";
+        Assert.Equal(500, note.Length);
+        var a = await CreateAsync("Restock aisle 7");
+        _ctx.Events.Clear();
+
+        var result = await _ctx.Activities.BulkUpdateStatusAsync(
+            TestUsers.StoreManager, new BulkStatusUpdateRequest(ActivityStatus.Done, [a.Id], note), default);
+
+        Assert.Equal(1, result.Updated);
+        Assert.Equal(ActivityStatus.Done, (await FindAsync(a.Id)).Status);
+        var entry = Assert.Single(await _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, a.Id, default));
+        Assert.Equal(note, entry.Note);
+        var evt = Assert.Single(_ctx.Events.Of<ActivityStatusChanged>());
+        Assert.Equal((a.Id, ActivityStatus.Done), (evt.ActivityId, evt.NewStatus));
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_4_AuditTrail_IsNotFoundForOtherStoreAndMissingIds_AndReadableByAnyUserOfTheStore()
+    {
+        var a = await CreateAsync("Restock aisle 1");
+        await BulkAsync(TestUsers.StoreManager, ActivityStatus.Done, a.Id);
+
+        var otherStore = await Assert.ThrowsAsync<NotFoundError>(() => _ctx.Activities.ListAuditAsync(TestUsers.OtherStoreManager, a.Id, default));
+        var missing = await Assert.ThrowsAsync<NotFoundError>(() => _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, MissingId, default));
+
+        Assert.Equal((ErrorCodes.NotFound, a.Id), (otherStore.Code, otherStore.ResourceId));
+        Assert.Equal((ErrorCodes.NotFound, MissingId), (missing.Code, missing.ResourceId));
+        var entry = Assert.Single(await _ctx.Activities.ListAuditAsync(TestUsers.Associate, a.Id, default));
+        AssertAuditEntry(entry, a.Id, ActivityStatus.Todo, ActivityStatus.Done, "usr-sm-001", note: null);
+        Assert.Single(_ctx.ActivityAudit.All);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_5_SuccessiveBulkUpdates_AppendEntries_OldestFirst()
+    {
+        var a = await CreateAsync("Planogram reset");
+        _ctx.Time.Now = _ctx.Time.Now.AddMinutes(1);
+        await BulkAsync(TestUsers.StoreManager, ActivityStatus.Blocked, a.Id);
+        _ctx.Time.Now = _ctx.Time.Now.AddMinutes(30);
+
+        await _ctx.Activities.BulkUpdateStatusAsync(
+            TestUsers.DepartmentLead, new BulkStatusUpdateRequest(ActivityStatus.Done, [a.Id], "Fixed by night crew"), default);
+
+        var entries = await _ctx.Activities.ListAuditAsync(TestUsers.StoreManager, a.Id, default);
+        Assert.Equal(2, entries.Count);
+        AssertAuditEntry(entries[0], a.Id, ActivityStatus.Todo, ActivityStatus.Blocked, "usr-sm-001", note: null);
+        AssertAuditEntry(entries[1], a.Id, ActivityStatus.Blocked, ActivityStatus.Done, "usr-dl-001", "Fixed by night crew");
+        Assert.True(entries[0].OccurredAt < entries[1].OccurredAt);
+        Assert.Equal(_ctx.Time.Now, entries[1].OccurredAt);
+        Assert.NotEqual(entries[0].Id, entries[1].Id);
+    }
+
     private static CreateActivityRequest Request(string title) => new(title, null, null, null, null, null, null, null);
+
+    private static void AssertAuditEntry(
+        ActivityAuditEntryDto entry, string activityId, ActivityStatus previous, ActivityStatus next, string changedBy, string? note)
+    {
+        Assert.StartsWith("aud-", entry.Id, StringComparison.Ordinal);
+        Assert.Equal(activityId, entry.ActivityId);
+        Assert.Equal((previous, next), (entry.PreviousStatus, entry.NewStatus));
+        Assert.Equal(changedBy, entry.ChangedBy);
+        Assert.Equal("BULK_STATUS_UPDATE", entry.Source);
+        Assert.Equal(note, entry.Note);
+    }
 
     private static void AssertFailed(BulkStatusItemResult item, string activityId, string code)
     {

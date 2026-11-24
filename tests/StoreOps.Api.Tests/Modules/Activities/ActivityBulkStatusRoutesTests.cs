@@ -3,6 +3,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using StoreOps.Api.Modules.Activities;
 using StoreOps.Api.Modules.Activities.Contracts;
 using StoreOps.Api.Modules.Alerts.Contracts;
 using StoreOps.Api.Modules.Staff;
@@ -14,7 +15,8 @@ namespace StoreOps.Api.Tests.Modules.Activities;
 
 /// <summary>
 /// <c>PATCH /api/activities/bulk-status</c> over HTTP: routing (the literal route wins over <c>{id}</c>),
-/// wire format, validation envelope, auth, and the events seen by a recording subscriber on the real bus.
+/// wire format, validation envelope, auth, the events seen by a recording subscriber on the real bus, and
+/// <c>GET /api/activities/{id}/audit</c> with every entry the real audit repository received.
 /// </summary>
 public sealed class ActivityBulkStatusRoutesTests : IDisposable
 {
@@ -22,12 +24,17 @@ public sealed class ActivityBulkStatusRoutesTests : IDisposable
     private const string MissingId = "act-missing";
 
     private readonly StatusChangedRecorder _recorder = new();
+    private readonly RecordingActivityAuditRepository _audit = new();
     private readonly TestApi _api;
     private readonly HttpClient _manager;
 
     public ActivityBulkStatusRoutesTests()
     {
-        _api = new TestApi(services => services.AddSingleton<IEventSubscriber<ActivityStatusChanged>>(_recorder));
+        _api = new TestApi(services =>
+        {
+            services.AddSingleton<IEventSubscriber<ActivityStatusChanged>>(_recorder);
+            services.AddSingleton<IActivityAuditRepository>(_audit);
+        });
         _manager = _api.As(StaffSeedData.StoreManagerToken);
     }
 
@@ -384,6 +391,194 @@ public sealed class ActivityBulkStatusRoutesTests : IDisposable
         var storedB = await otherStore.GetJsonAsync<ActivityDto>($"/api/activities/{b.Id}");
         Assert.Equal((ActivityStatus.Todo, b.UpdatedAt), (storedB.Status, storedB.UpdatedAt));
         Assert.Empty(_recorder.Events);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_1_EachUpdatedActivity_HasExactlyOneAuditEntry_OnTheWire()
+    {
+        var a = await CreateAsync("Restock aisle 1");
+        var b = await CreateAsync("Restock aisle 2");
+        Assert.Empty(await GetAuditAsync(_manager, a.Id));
+
+        using var response = await _manager.PatchJsonAsync(BulkUrl, new { status = "DONE", activityIds = new[] { a.Id, b.Id } });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using (var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync()))
+        {
+            Assert.Equal(2, json.RootElement.GetProperty("updated").GetInt32());
+        }
+
+        foreach (var id in new[] { a.Id, b.Id })
+        {
+            var entry = Assert.Single(await GetAuditAsync(_manager, id));
+            AssertAuditEntry(entry, id, "TODO", "DONE", "usr-sm-001", note: null);
+            var activity = await _manager.GetJsonAsync<ActivityDto>($"/api/activities/{id}");
+            Assert.Equal(activity.UpdatedAt, entry.GetProperty("occurredAt").GetDateTimeOffset());
+        }
+
+        Assert.Equal(2, _audit.All.Count);
+        Assert.Equal([a.Id, b.Id], _audit.All.Select(e => e.ActivityId));
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_2_UnchangedAndFailedItems_HaveEmptyAuditTrails_OnlyTheUpdatedOneHasAnEntry()
+    {
+        var otherStore = _api.As(StaffSeedData.OtherStoreManagerToken);
+        var a = await CreateAsync("Finished restock");
+        var b = await CreateAsync("Stuck delivery");
+        var c = await CreateAsync("Pending audit");
+        var x = await CreateAsync("Store 2 restock", otherStore);
+        (await _manager.PatchJsonAsync($"/api/activities/{a.Id}", new { status = "DONE" })).Dispose();
+        (await _manager.PatchJsonAsync($"/api/activities/{b.Id}", new { status = "BLOCKED" })).Dispose();
+        Assert.Empty(_audit.All); // the single PATCH writes no audit entries
+
+        using var response = await _manager.PatchJsonAsync(BulkUrl, new { status = "BLOCKED", activityIds = new[] { a.Id, b.Id, c.Id, x.Id } });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using (var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync()))
+        {
+            var root = json.RootElement;
+            AssertCounts(root, requested: 4, updated: 1, unchanged: 1, failed: 2);
+            AssertFailedItem(root.GetProperty("results")[0], a.Id, ErrorCodes.BusinessRuleViolation);
+            AssertItem(root.GetProperty("results")[1], b.Id, "UNCHANGED", "BLOCKED", "BLOCKED");
+            AssertItem(root.GetProperty("results")[2], c.Id, "UPDATED", "TODO", "BLOCKED");
+            AssertFailedItem(root.GetProperty("results")[3], x.Id, ErrorCodes.NotFound);
+        }
+
+        Assert.Empty(await GetAuditAsync(_manager, a.Id));
+        Assert.Empty(await GetAuditAsync(_manager, b.Id));
+        var entry = Assert.Single(await GetAuditAsync(_manager, c.Id));
+        AssertAuditEntry(entry, c.Id, "TODO", "BLOCKED", "usr-sm-001", note: null);
+        Assert.Empty(await GetAuditAsync(otherStore, x.Id));
+        Assert.DoesNotContain(_audit.All, e => e.ActivityId == x.Id);
+        Assert.Equal(c.Id, Assert.Single(_audit.All).ActivityId);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_3_HandoverNote_IsOnEveryUpdatedEntry_AndA501CharacterNoteIs400OnNote_ChangingNothing()
+    {
+        const string Note = "Aisle 7 shelf damaged, waiting on maintenance";
+        var a = await CreateAsync("Restock aisle 7");
+        var b = await CreateAsync("Facing aisle 7");
+
+        using (var first = await _api.As(StaffSeedData.DepartmentLeadToken)
+            .PatchJsonAsync(BulkUrl, new { status = "BLOCKED", activityIds = new[] { a.Id, b.Id }, note = Note }))
+        {
+            Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        }
+
+        foreach (var id in new[] { a.Id, b.Id })
+        {
+            var entry = Assert.Single(await GetAuditAsync(_manager, id));
+            AssertAuditEntry(entry, id, "TODO", "BLOCKED", "usr-dl-001", Note);
+        }
+
+        var blocked = await _manager.GetJsonAsync<ActivityDto>($"/api/activities/{a.Id}");
+        _recorder.Clear();
+
+        using var second = await _manager.PatchJsonAsync(BulkUrl, new { status = "DONE", activityIds = new[] { a.Id }, note = new string('x', 501) });
+
+        await second.AssertErrorAsync(HttpStatusCode.BadRequest, ErrorCodes.ValidationFailed, field: "note");
+        var storedA = await _manager.GetJsonAsync<ActivityDto>($"/api/activities/{a.Id}");
+        Assert.Equal((ActivityStatus.Blocked, blocked.UpdatedAt), (storedA.Status, storedA.UpdatedAt));
+        Assert.Single(await GetAuditAsync(_manager, a.Id));
+        Assert.Equal(2, _audit.All.Count);
+        Assert.Empty(_recorder.Events);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_3_NoteOfExactly500Characters_Returns200_AndIsStoredVerbatim()
+    {
+        var note = string.Concat(Enumerable.Repeat("Shelf 7 ", 62)) + "ok!!";
+        Assert.Equal(500, note.Length);
+        var a = await CreateAsync("Restock aisle 7");
+        _recorder.Clear();
+
+        using var response = await _manager.PatchJsonAsync(BulkUrl, new { status = "DONE", activityIds = new[] { a.Id }, note });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(ActivityStatus.Done, (await _manager.GetJsonAsync<ActivityDto>($"/api/activities/{a.Id}")).Status);
+        var entry = Assert.Single(await GetAuditAsync(_manager, a.Id));
+        AssertAuditEntry(entry, a.Id, "TODO", "DONE", "usr-sm-001", note);
+        Assert.Equal(a.Id, Assert.Single(_recorder.Events).ActivityId);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_4_AuditOfOtherStoreOrMissingActivity_Is404_AndAnyUserOfTheStoreCanReadIt()
+    {
+        var a = await CreateAsync("Restock aisle 1");
+        (await _manager.PatchJsonAsync(BulkUrl, new { status = "DONE", activityIds = new[] { a.Id } })).Dispose();
+        Assert.Single(_audit.All);
+
+        using var otherStore = await _api.As(StaffSeedData.OtherStoreManagerToken).GetAsync($"/api/activities/{a.Id}/audit");
+        using var missing = await _manager.GetAsync($"/api/activities/{MissingId}/audit");
+
+        var raw = await otherStore.Content.ReadAsStringAsync();
+        await otherStore.AssertErrorAsync(HttpStatusCode.NotFound, ErrorCodes.NotFound);
+        Assert.DoesNotContain("aud-", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("previousStatus", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("BULK_STATUS_UPDATE", raw, StringComparison.Ordinal);
+        await missing.AssertErrorAsync(HttpStatusCode.NotFound, ErrorCodes.NotFound);
+
+        var entry = Assert.Single(await GetAuditAsync(_api.As(StaffSeedData.AssociateToken), a.Id));
+        AssertAuditEntry(entry, a.Id, "TODO", "DONE", "usr-sm-001", note: null);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_4_AuditWithoutBearerToken_Returns401()
+    {
+        var a = await CreateAsync("Restock aisle 1");
+
+        using var response = await _api.Anonymous.GetAsync($"/api/activities/{a.Id}/audit");
+
+        await response.AssertErrorAsync(HttpStatusCode.Unauthorized, ErrorCodes.Unauthorized);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC3_5_SuccessiveBulkUpdates_ReturnTwoEntries_OldestFirst()
+    {
+        var a = await CreateAsync("Planogram reset");
+
+        (await _manager.PatchJsonAsync(BulkUrl, new { status = "BLOCKED", activityIds = new[] { a.Id } })).Dispose();
+        (await _api.As(StaffSeedData.DepartmentLeadToken)
+            .PatchJsonAsync(BulkUrl, new { status = "DONE", activityIds = new[] { a.Id }, note = "Fixed by night crew" })).Dispose();
+
+        var entries = await GetAuditAsync(_manager, a.Id);
+        Assert.Equal(2, entries.Count);
+        AssertAuditEntry(entries[0], a.Id, "TODO", "BLOCKED", "usr-sm-001", note: null);
+        AssertAuditEntry(entries[1], a.Id, "BLOCKED", "DONE", "usr-dl-001", "Fixed by night crew");
+        Assert.True(entries[0].GetProperty("occurredAt").GetDateTimeOffset() <= entries[1].GetProperty("occurredAt").GetDateTimeOffset());
+        Assert.NotEqual(entries[0].GetProperty("id").GetString(), entries[1].GetProperty("id").GetString());
+        Assert.Equal(ActivityStatus.Done, (await _manager.GetJsonAsync<ActivityDto>($"/api/activities/{a.Id}")).Status);
+    }
+
+    private static void AssertAuditEntry(JsonElement entry, string activityId, string previousStatus, string newStatus, string changedBy, string? note)
+    {
+        Assert.StartsWith("aud-", entry.GetProperty("id").GetString(), StringComparison.Ordinal);
+        Assert.Equal(activityId, entry.GetProperty("activityId").GetString());
+        Assert.Equal(previousStatus, entry.GetProperty("previousStatus").GetString());
+        Assert.Equal(newStatus, entry.GetProperty("newStatus").GetString());
+        Assert.Equal(changedBy, entry.GetProperty("changedBy").GetString());
+        Assert.Equal("BULK_STATUS_UPDATE", entry.GetProperty("source").GetString());
+        if (note is null)
+        {
+            Assert.Equal(JsonValueKind.Null, entry.GetProperty("note").ValueKind);
+        }
+        else
+        {
+            Assert.Equal(note, entry.GetProperty("note").GetString());
+        }
+
+        Assert.Equal(JsonValueKind.String, entry.GetProperty("occurredAt").ValueKind);
+    }
+
+    private static async Task<List<JsonElement>> GetAuditAsync(HttpClient client, string activityId)
+    {
+        using var response = await client.GetAsync($"/api/activities/{activityId}/audit");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(JsonValueKind.Array, json.RootElement.ValueKind);
+        return json.RootElement.EnumerateArray().Select(e => e.Clone()).ToList();
     }
 
     private static void AssertCounts(JsonElement root, int requested, int updated, int unchanged, int failed)

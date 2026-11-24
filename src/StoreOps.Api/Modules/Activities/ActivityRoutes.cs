@@ -16,6 +16,7 @@ internal static class ActivityRoutes
         group.MapPost("/", CreateActivityAsync).WithName("CreateActivity");
         group.MapPatch("/bulk-status", BulkUpdateActivityStatusAsync).WithName("BulkUpdateActivityStatus");
         group.MapGet("/{id}", GetActivityAsync).WithName("GetActivity");
+        group.MapGet("/{id}/audit", ListActivityAuditAsync).WithName("ListActivityAudit");
         group.MapPatch("/{id}", UpdateActivityAsync).WithName("UpdateActivity");
         group.MapDelete("/{id}", DeleteActivityAsync).WithName("DeleteActivity");
 
@@ -39,6 +40,10 @@ internal static class ActivityRoutes
     private static async Task<Ok<ActivityDto>> GetActivityAsync(
         ActivityService service, CurrentUser user, string id, CancellationToken cancellationToken)
         => TypedResults.Ok(await service.GetAsync(user, id, cancellationToken));
+
+    private static async Task<Ok<IReadOnlyList<ActivityAuditEntryDto>>> ListActivityAuditAsync(
+        ActivityService service, CurrentUser user, string id, CancellationToken cancellationToken)
+        => TypedResults.Ok(await service.ListAuditAsync(user, id, cancellationToken));
 
     private static async Task<Ok<ActivityDto>> UpdateActivityAsync(
         ActivityService service, CurrentUser user, string id, UpdateActivityRequest request, CancellationToken cancellationToken)

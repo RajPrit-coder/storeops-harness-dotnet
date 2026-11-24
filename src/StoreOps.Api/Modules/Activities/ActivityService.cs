@@ -13,6 +13,7 @@ namespace StoreOps.Api.Modules.Activities;
 /// </summary>
 internal sealed class ActivityService(
     IActivityRepository repository,
+    IActivityAuditRepository auditRepository,
     IStaffDirectory staffDirectory,
     IProgrammeQueries programmeQueries,
     IEventBus eventBus,
@@ -20,6 +21,9 @@ internal sealed class ActivityService(
 {
     /// <summary>Upper bound on the number of activities one bulk status request may change.</summary>
     public const int MaxBulkActivityIds = 50;
+
+    /// <summary>Upper bound on the length of the optional handover note of a bulk status request (BR-13).</summary>
+    public const int MaxHandoverNoteLength = 500;
 
     public async Task<ActivityDto?> FindByIdAsync(string activityId, CancellationToken cancellationToken)
         => (await repository.GetByIdAsync(activityId, cancellationToken))?.ToDto();
@@ -33,6 +37,17 @@ internal sealed class ActivityService(
 
     public async Task<ActivityDto> GetAsync(CurrentUser user, string id, CancellationToken cancellationToken)
         => (await GetVisibleAsync(user, id, cancellationToken)).ToDto();
+
+    /// <summary>
+    /// BR-12: the audit trail of one activity, oldest first. Any authenticated user of the activity's store may
+    /// read it; a missing or other-store activity is reported as not found, exactly like the activity itself.
+    /// </summary>
+    public async Task<IReadOnlyList<ActivityAuditEntryDto>> ListAuditAsync(
+        CurrentUser user, string id, CancellationToken cancellationToken)
+    {
+        var activity = await GetVisibleAsync(user, id, cancellationToken);
+        return (await auditRepository.ListByActivityAsync(activity.Id, cancellationToken)).Select(e => e.ToDto()).ToList();
+    }
 
     public async Task<ActivityDto> CreateAsync(CurrentUser user, CreateActivityRequest request, CancellationToken cancellationToken)
     {
@@ -157,18 +172,20 @@ internal sealed class ActivityService(
     /// in request order and independently: a missing, other-store, forbidden or not-reopenable activity is
     /// reported FAILED (with its error code) and the remaining ids are still processed. An activity already in
     /// the target status is reported UNCHANGED and left untouched; every real change is saved and announced
-    /// with its own <see cref="ActivityStatusChanged"/>.
+    /// with its own <see cref="ActivityStatusChanged"/> and recorded with one <see cref="ActivityAuditEntry"/>
+    /// carrying the optional handover note (BR-11, BR-13).
     /// </summary>
     public async Task<BulkStatusUpdateResponse> BulkUpdateStatusAsync(
         CurrentUser user, BulkStatusUpdateRequest request, CancellationToken cancellationToken)
     {
         var target = ValidateBulkTargetStatus(request.Status);
         var activityIds = ValidateBulkActivityIds(request.ActivityIds);
+        var note = ValidateHandoverNote(request.Note);
 
         var results = new List<BulkStatusItemResult>(activityIds.Count);
         foreach (var activityId in activityIds)
         {
-            results.Add(await ApplyBulkStatusAsync(user, activityId, target, cancellationToken));
+            results.Add(await ApplyBulkStatusAsync(user, activityId, target, note, cancellationToken));
         }
 
         return new BulkStatusUpdateResponse(
@@ -219,13 +236,18 @@ internal sealed class ActivityService(
         return ids;
     }
 
+    private static string? ValidateHandoverNote(string? note)
+        => note is { Length: > MaxHandoverNoteLength }
+            ? throw new ValidationError($"note may be at most {MaxHandoverNoteLength} characters long.", "note")
+            : note;
+
     /// <summary>
     /// One bulk item. The per-item checks (BR-7 order) raise the usual <see cref="AppError"/>s; they are caught
     /// here and reported as a FAILED item so the remaining ids are still processed. Only the checks are guarded:
     /// an error raised after the activity has been saved is not disguised as a per-item failure.
     /// </summary>
     private async Task<BulkStatusItemResult> ApplyBulkStatusAsync(
-        CurrentUser user, string activityId, ActivityStatus target, CancellationToken cancellationToken)
+        CurrentUser user, string activityId, ActivityStatus target, string? note, CancellationToken cancellationToken)
     {
         Activity current;
         try
@@ -243,8 +265,39 @@ internal sealed class ActivityService(
             return new BulkStatusItemResult(activityId, BulkStatusOutcome.Unchanged, current.Status, current.Status, null);
         }
 
-        var updated = await UpdateAsync(user, activityId, new UpdateActivityRequest(target, null, null, null), cancellationToken);
+        var updated = await ChangeBulkStatusAsync(user, current, target, note, cancellationToken);
         return new BulkStatusItemResult(activityId, BulkStatusOutcome.Updated, current.Status, updated.Status, null);
+    }
+
+    /// <summary>
+    /// Saves one bulk status change, then records its audit entry (same <c>occurredAt</c> as the activity's new
+    /// <c>updatedAt</c>), then announces it with <see cref="ActivityStatusChanged"/>.
+    /// </summary>
+    private async Task<Activity> ChangeBulkStatusAsync(
+        CurrentUser user, Activity current, ActivityStatus target, string? note, CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow();
+        var updated = current with { Status = target, UpdatedAt = now };
+
+        await repository.SaveAsync(updated, cancellationToken);
+        await auditRepository.AppendAsync(
+            new ActivityAuditEntry(
+                Ids.New("aud"),
+                updated.Id,
+                updated.StoreId,
+                current.Status,
+                updated.Status,
+                user.UserId,
+                ActivityAuditEntry.BulkStatusUpdateSource,
+                note,
+                now),
+            cancellationToken);
+        await eventBus.PublishAsync(
+            new ActivityStatusChanged(
+                updated.Id, updated.StoreId, updated.Title, current.Status, updated.Status, updated.Priority, updated.AssigneeId, user.UserId, now),
+            cancellationToken);
+
+        return updated;
     }
 
     /// <summary>
