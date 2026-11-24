@@ -1,14 +1,22 @@
 using StoreOps.Api.Modules.Activities;
 using StoreOps.Api.Modules.Activities.Contracts;
 using StoreOps.Api.Modules.Alerts.Contracts;
+using StoreOps.Api.Modules.Staff.Contracts;
 using StoreOps.Api.Shared.Errors;
 using StoreOps.Api.Tests.Infrastructure;
 
 namespace StoreOps.Api.Tests.Modules.Activities;
 
-/// <summary>Business rules of the shift-handover bulk status update (sprint 1: validation and happy path).</summary>
+/// <summary>
+/// Business rules of the shift-handover bulk status update (sprint 1: validation and happy path;
+/// sprint 2: per-item failures for store scope, associate permissions and the reopen rule).
+/// </summary>
 public sealed class ActivityBulkStatusServiceTests
 {
+    private const string MissingId = "act-missing";
+
+    private static readonly CurrentUser RegionalManager = new("usr-rm-001", "store-001", "region-north", StaffRole.RegionalManager);
+
     private readonly ModuleTestContext _ctx = new();
 
     public static TheoryData<ActivityStatus?> NonTerminalTargets => new() { ActivityStatus.InProgress, ActivityStatus.Todo, null };
@@ -172,7 +180,201 @@ public sealed class ActivityBulkStatusServiceTests
         Assert.Single(_ctx.Events.Published);
     }
 
+    [Fact]
+    public async Task BulkStatus_AC2_1_MissingAndOtherStoreIds_FailAsNotFound_AndTheOwnStoreActivityIsStillUpdated()
+    {
+        var a = await CreateAsync("Restock aisle 1");
+        var b = await _ctx.Activities.CreateAsync(TestUsers.OtherStoreManager, Request("Store 2 restock"), default);
+        _ctx.Time.Now = _ctx.Time.Now.AddMinutes(5);
+        _ctx.Events.Clear();
+
+        var result = await BulkAsync(TestUsers.StoreManager, ActivityStatus.Done, b.Id, MissingId, a.Id);
+
+        Assert.Equal((3, 1, 0, 2), (result.Requested, result.Updated, result.Unchanged, result.Failed));
+        AssertFailed(result.Results[0], b.Id, ErrorCodes.NotFound);
+        AssertFailed(result.Results[1], MissingId, ErrorCodes.NotFound);
+        Assert.Equal(new BulkStatusItemResult(a.Id, BulkStatusOutcome.Updated, ActivityStatus.Todo, ActivityStatus.Done, null), result.Results[2]);
+
+        var storedB = await FindAsync(b.Id);
+        Assert.Equal((ActivityStatus.Todo, b.UpdatedAt), (storedB.Status, storedB.UpdatedAt));
+        Assert.Equal(ActivityStatus.Done, (await FindAsync(a.Id)).Status);
+        Assert.Null(await _ctx.Activities.FindByIdAsync(MissingId, default));
+
+        var evt = Assert.Single(_ctx.Events.Of<ActivityStatusChanged>());
+        Assert.Equal((a.Id, ActivityStatus.Todo, ActivityStatus.Done), (evt.ActivityId, evt.PreviousStatus, evt.NewStatus));
+        Assert.Single(_ctx.Events.Published);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC2_2_Associate_UpdatesAssignedAndOwnedActivities_AndIsForbiddenOnOthers()
+    {
+        var a = await _ctx.Activities.CreateAsync(
+            TestUsers.StoreManager, new CreateActivityRequest("Assigned restock", null, null, null, null, null, "usr-as-001", null), default);
+        var b = await CreateAsync("Unassigned audit");
+        var c = await _ctx.Activities.CreateAsync(TestUsers.Associate, Request("Own facing task"), default);
+        _ctx.Time.Now = _ctx.Time.Now.AddMinutes(5);
+        _ctx.Events.Clear();
+
+        var result = await BulkAsync(TestUsers.Associate, ActivityStatus.Done, a.Id, b.Id, c.Id);
+
+        Assert.Equal((3, 2, 0, 1), (result.Requested, result.Updated, result.Unchanged, result.Failed));
+        Assert.Equal(new BulkStatusItemResult(a.Id, BulkStatusOutcome.Updated, ActivityStatus.Todo, ActivityStatus.Done, null), result.Results[0]);
+        AssertFailed(result.Results[1], b.Id, ErrorCodes.Forbidden);
+        Assert.Equal(new BulkStatusItemResult(c.Id, BulkStatusOutcome.Updated, ActivityStatus.Todo, ActivityStatus.Done, null), result.Results[2]);
+
+        var storedB = await FindAsync(b.Id);
+        Assert.Equal((ActivityStatus.Todo, b.UpdatedAt), (storedB.Status, storedB.UpdatedAt));
+        Assert.Equal(ActivityStatus.Done, (await FindAsync(a.Id)).Status);
+        Assert.Equal(ActivityStatus.Done, (await FindAsync(c.Id)).Status);
+
+        var events = _ctx.Events.Of<ActivityStatusChanged>().ToList();
+        Assert.Equal([a.Id, c.Id], events.Select(e => e.ActivityId));
+        Assert.All(events, e => Assert.Equal("usr-as-001", e.ChangedBy));
+        Assert.Equal(2, _ctx.Events.Published.Count);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC2_3_DepartmentLeadAndRegionalManager_MayUpdateAnyActivityOfTheirStore()
+    {
+        var a = await CreateAsync("Planogram reset");
+        var b = await CreateAsync("Compliance check");
+        _ctx.Events.Clear();
+
+        var leadResult = await BulkAsync(TestUsers.DepartmentLead, ActivityStatus.Blocked, a.Id);
+        var regionalResult = await BulkAsync(RegionalManager, ActivityStatus.Done, b.Id);
+
+        Assert.Equal((1, 1, 0, 0), (leadResult.Requested, leadResult.Updated, leadResult.Unchanged, leadResult.Failed));
+        Assert.Equal((1, 1, 0, 0), (regionalResult.Requested, regionalResult.Updated, regionalResult.Unchanged, regionalResult.Failed));
+        Assert.Equal(
+            new BulkStatusItemResult(a.Id, BulkStatusOutcome.Updated, ActivityStatus.Todo, ActivityStatus.Blocked, null), Assert.Single(leadResult.Results));
+        Assert.Equal(
+            new BulkStatusItemResult(b.Id, BulkStatusOutcome.Updated, ActivityStatus.Todo, ActivityStatus.Done, null), Assert.Single(regionalResult.Results));
+        Assert.Equal(ActivityStatus.Blocked, (await FindAsync(a.Id)).Status);
+        Assert.Equal(ActivityStatus.Done, (await FindAsync(b.Id)).Status);
+
+        var events = _ctx.Events.Of<ActivityStatusChanged>().ToList();
+        Assert.Equal(2, events.Count);
+        Assert.Equal((a.Id, ActivityStatus.Blocked, "usr-dl-001"), (events[0].ActivityId, events[0].NewStatus, events[0].ChangedBy));
+        Assert.Equal((b.Id, ActivityStatus.Done, "usr-rm-001"), (events[1].ActivityId, events[1].NewStatus, events[1].ChangedBy));
+        Assert.Equal(2, _ctx.Events.Published.Count);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC2_4_DoneActivity_CannotBeBlocked_AndRaisesNoEscalation_WhileBlockedCanBeDone()
+    {
+        var a = await CreateAsync("Finished restock");
+        var b = await CreateAsync("Stuck delivery");
+        var c = await CreateAsync("Pending audit");
+        await SetStatusAsync(a.Id, ActivityStatus.Done);
+        await SetStatusAsync(b.Id, ActivityStatus.Blocked);
+        var doneAt = (await FindAsync(a.Id)).UpdatedAt;
+        _ctx.Time.Now = _ctx.Time.Now.AddMinutes(5);
+        _ctx.Events.Clear();
+
+        var blockResult = await BulkAsync(TestUsers.StoreManager, ActivityStatus.Blocked, a.Id, c.Id);
+
+        Assert.Equal((2, 1, 0, 1), (blockResult.Requested, blockResult.Updated, blockResult.Unchanged, blockResult.Failed));
+        AssertFailed(blockResult.Results[0], a.Id, ErrorCodes.BusinessRuleViolation);
+        Assert.Equal(
+            new BulkStatusItemResult(c.Id, BulkStatusOutcome.Updated, ActivityStatus.Todo, ActivityStatus.Blocked, null), blockResult.Results[1]);
+        var storedA = await FindAsync(a.Id);
+        Assert.Equal((ActivityStatus.Done, doneAt), (storedA.Status, storedA.UpdatedAt));
+        Assert.Equal(ActivityStatus.Blocked, (await FindAsync(c.Id)).Status);
+        var blockedEvent = Assert.Single(_ctx.Events.Of<ActivityStatusChanged>());
+        Assert.Equal(c.Id, blockedEvent.ActivityId);
+        Assert.Single(_ctx.Events.Published);
+
+        // Deliver what was published to Alerts as the real bus would: c escalates, a never does.
+        await _ctx.Notifications.EscalateBlockedActivityAsync(blockedEvent, default);
+        var alerts = await _ctx.Notifications.ListForUserAsync(TestUsers.StoreManager, default);
+        Assert.DoesNotContain(alerts, n => n.SourceActivityId == a.Id);
+        Assert.Contains(alerts, n => n.SourceActivityId == c.Id && n.Type == AlertType.Escalation);
+
+        _ctx.Events.Clear();
+        var doneResult = await BulkAsync(TestUsers.StoreManager, ActivityStatus.Done, b.Id);
+
+        Assert.Equal(
+            new BulkStatusItemResult(b.Id, BulkStatusOutcome.Updated, ActivityStatus.Blocked, ActivityStatus.Done, null), Assert.Single(doneResult.Results));
+        Assert.Equal(ActivityStatus.Done, (await FindAsync(b.Id)).Status);
+        var doneEvent = Assert.Single(_ctx.Events.Of<ActivityStatusChanged>());
+        Assert.Equal((b.Id, ActivityStatus.Blocked, ActivityStatus.Done), (doneEvent.ActivityId, doneEvent.PreviousStatus, doneEvent.NewStatus));
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC2_5_EveryItemFailing_ReturnsAllFailed_AndChangesNothing()
+    {
+        var b = await _ctx.Activities.CreateAsync(TestUsers.OtherStoreManager, Request("Store 2 restock"), default);
+        _ctx.Time.Now = _ctx.Time.Now.AddMinutes(5);
+        _ctx.Events.Clear();
+
+        var result = await BulkAsync(TestUsers.StoreManager, ActivityStatus.Done, MissingId, b.Id);
+
+        Assert.Equal((2, 0, 0, 2), (result.Requested, result.Updated, result.Unchanged, result.Failed));
+        AssertFailed(result.Results[0], MissingId, ErrorCodes.NotFound);
+        AssertFailed(result.Results[1], b.Id, ErrorCodes.NotFound);
+        var storedB = await FindAsync(b.Id);
+        Assert.Equal((ActivityStatus.Todo, b.UpdatedAt), (storedB.Status, storedB.UpdatedAt));
+        Assert.Empty(_ctx.Events.Published);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC2_6_CheckOrder_NotFoundBeatsForbidden_AndForbiddenBeatsUnchanged()
+    {
+        var a = await CreateAsync("Finished restock");
+        await SetStatusAsync(a.Id, ActivityStatus.Done);
+        var doneA = await FindAsync(a.Id);
+        var b = await _ctx.Activities.CreateAsync(TestUsers.OtherStoreManager, Request("Store 2 restock"), default);
+        _ctx.Time.Now = _ctx.Time.Now.AddMinutes(5);
+        _ctx.Events.Clear();
+
+        var result = await BulkAsync(TestUsers.Associate, ActivityStatus.Done, a.Id, b.Id);
+
+        Assert.Equal((2, 0, 0, 2), (result.Requested, result.Updated, result.Unchanged, result.Failed));
+        AssertFailed(result.Results[0], a.Id, ErrorCodes.Forbidden);
+        AssertFailed(result.Results[1], b.Id, ErrorCodes.NotFound);
+        var storedA = await FindAsync(a.Id);
+        Assert.Equal((ActivityStatus.Done, doneA.UpdatedAt), (storedA.Status, storedA.UpdatedAt));
+        var storedB = await FindAsync(b.Id);
+        Assert.Equal((ActivityStatus.Todo, b.UpdatedAt), (storedB.Status, storedB.UpdatedAt));
+        Assert.Empty(_ctx.Events.Published);
+    }
+
+    [Fact]
+    public async Task BulkStatus_AC2_6_CheckOrder_ForbiddenBeatsBusinessRule_ForAssociateBlockingAnothersDoneActivity()
+    {
+        var a = await CreateAsync("Finished restock");
+        await SetStatusAsync(a.Id, ActivityStatus.Done);
+        var own = await _ctx.Activities.CreateAsync(TestUsers.Associate, Request("Own facing task"), default);
+        await _ctx.Activities.UpdateAsync(TestUsers.Associate, own.Id, new UpdateActivityRequest(ActivityStatus.Done, null, null, null), default);
+        _ctx.Events.Clear();
+
+        var result = await BulkAsync(TestUsers.Associate, ActivityStatus.Blocked, a.Id, own.Id);
+
+        Assert.Equal((2, 0, 0, 2), (result.Requested, result.Updated, result.Unchanged, result.Failed));
+        AssertFailed(result.Results[0], a.Id, ErrorCodes.Forbidden);
+        AssertFailed(result.Results[1], own.Id, ErrorCodes.BusinessRuleViolation);
+        Assert.Equal(ActivityStatus.Done, (await FindAsync(a.Id)).Status);
+        Assert.Equal(ActivityStatus.Done, (await FindAsync(own.Id)).Status);
+        Assert.Empty(_ctx.Events.Published);
+    }
+
     private static CreateActivityRequest Request(string title) => new(title, null, null, null, null, null, null, null);
+
+    private static void AssertFailed(BulkStatusItemResult item, string activityId, string code)
+    {
+        Assert.Equal((activityId, BulkStatusOutcome.Failed), (item.ActivityId, item.Outcome));
+        Assert.Null(item.PreviousStatus);
+        Assert.Null(item.NewStatus);
+        Assert.NotNull(item.Error);
+        Assert.Equal(code, item.Error.Code);
+        Assert.False(string.IsNullOrWhiteSpace(item.Error.Message));
+    }
+
+    private Task<BulkStatusUpdateResponse> BulkAsync(CurrentUser user, ActivityStatus target, params string[] activityIds)
+        => _ctx.Activities.BulkUpdateStatusAsync(user, new BulkStatusUpdateRequest(target, activityIds), default);
+
+    private Task<ActivityDto> SetStatusAsync(string id, ActivityStatus status)
+        => _ctx.Activities.UpdateAsync(TestUsers.StoreManager, id, new UpdateActivityRequest(status, null, null, null), default);
 
     private Task<ActivityDto> CreateAsync(string title)
         => _ctx.Activities.CreateAsync(TestUsers.StoreManager, Request(title), default);

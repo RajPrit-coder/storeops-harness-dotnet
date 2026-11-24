@@ -154,8 +154,10 @@ internal sealed class ActivityService(
     /// <summary>
     /// Shift handover: sets every listed activity of the caller's store to DONE or BLOCKED in one request.
     /// The whole request is validated before any activity is touched; ids are then processed one at a time,
-    /// in request order. An activity already in the target status is reported UNCHANGED and left untouched;
-    /// every real change is saved and announced with its own <see cref="ActivityStatusChanged"/>.
+    /// in request order and independently: a missing, other-store, forbidden or not-reopenable activity is
+    /// reported FAILED (with its error code) and the remaining ids are still processed. An activity already in
+    /// the target status is reported UNCHANGED and left untouched; every real change is saved and announced
+    /// with its own <see cref="ActivityStatusChanged"/>.
     /// </summary>
     public async Task<BulkStatusUpdateResponse> BulkUpdateStatusAsync(
         CurrentUser user, BulkStatusUpdateRequest request, CancellationToken cancellationToken)
@@ -217,11 +219,25 @@ internal sealed class ActivityService(
         return ids;
     }
 
-    /// <summary>One bulk item: store-scoped lookup, then either UNCHANGED or the regular single-activity update.</summary>
+    /// <summary>
+    /// One bulk item. The per-item checks (BR-7 order) raise the usual <see cref="AppError"/>s; they are caught
+    /// here and reported as a FAILED item so the remaining ids are still processed. Only the checks are guarded:
+    /// an error raised after the activity has been saved is not disguised as a per-item failure.
+    /// </summary>
     private async Task<BulkStatusItemResult> ApplyBulkStatusAsync(
         CurrentUser user, string activityId, ActivityStatus target, CancellationToken cancellationToken)
     {
-        var current = await GetVisibleAsync(user, activityId, cancellationToken);
+        Activity current;
+        try
+        {
+            current = await GetBulkChangeableAsync(user, activityId, target, cancellationToken);
+        }
+        catch (AppError error)
+        {
+            return new BulkStatusItemResult(
+                activityId, BulkStatusOutcome.Failed, null, null, new BulkStatusItemError(error.Code, error.Message));
+        }
+
         if (current.Status == target)
         {
             return new BulkStatusItemResult(activityId, BulkStatusOutcome.Unchanged, current.Status, current.Status, null);
@@ -229,6 +245,34 @@ internal sealed class ActivityService(
 
         var updated = await UpdateAsync(user, activityId, new UpdateActivityRequest(target, null, null, null), cancellationToken);
         return new BulkStatusItemResult(activityId, BulkStatusOutcome.Updated, current.Status, updated.Status, null);
+    }
+
+    /// <summary>
+    /// BR-7 per-item checks, first match wins: missing or other store → <see cref="NotFoundError"/>; an
+    /// associate who neither is assigned to nor owns the activity → <see cref="ForbiddenError"/>; already in the
+    /// target status → returned as-is (UNCHANGED); DONE cannot be set to BLOCKED → <see cref="BusinessRuleError"/>.
+    /// </summary>
+    private async Task<Activity> GetBulkChangeableAsync(
+        CurrentUser user, string activityId, ActivityStatus target, CancellationToken cancellationToken)
+    {
+        var current = await GetVisibleAsync(user, activityId, cancellationToken);
+
+        if (user.Role == StaffRole.Associate && current.AssigneeId != user.UserId && current.OwnerId != user.UserId)
+        {
+            throw new ForbiddenError($"Associates may only change the status of activities assigned to or owned by them; '{activityId}' is neither.");
+        }
+
+        if (current.Status == target)
+        {
+            return current;
+        }
+
+        if (current.Status == ActivityStatus.Done && target == ActivityStatus.Blocked)
+        {
+            throw new BusinessRuleError($"Activity '{activityId}' is DONE and cannot be reopened as BLOCKED.");
+        }
+
+        return current;
     }
 
     private async Task<IReadOnlyList<ActivityDto>> ListAsync(
