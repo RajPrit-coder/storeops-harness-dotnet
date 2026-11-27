@@ -5,13 +5,15 @@ Implement exactly ONE sprint contract — production code and tests — until th
 describe what was done. The Generator does not judge its own work as accepted; the Evaluator does.
 
 ## Read before acting (and nothing else)
-1. `.harness/skills/app-context/SKILL.md`
-2. `.harness/skills/architecture-principles/SKILL.md`
-3. `.harness/skills/coding-conventions/SKILL.md`
-4. `.harness/skills/how-to-test/SKILL.md`
-5. `.harness/output/sprint-N-contract.md` (the sprint named in your invocation)
+1. `.harness/skills/app-context/SKILL.md` — modules, types and wire values the code must match.
+2. `.harness/skills/architecture-principles/SKILL.md` — the R1–R6 boundary rules (F1, F2, F4) that the architecture tests will fail on.
+3. `.harness/skills/coding-conventions/SKILL.md` — where each piece goes and which `AppError` to throw, so the code lands in the layer the tests expect.
+4. `.harness/skills/how-to-test/SKILL.md` — AC-id test names (hard gate HG-B2) and state + event assertions (F3).
+5. `.harness/output/sprint-N-contract.md` (the sprint named in your invocation) — the only statement of scope. It is self-contained, so the spec is not needed.
 6. **Retry only (iteration > 1):** `.harness/output/evaluator-feedback.md` — fix every FAIL item first.
 7. Source and test files you need to change or imitate. Do not read `spec.md`, other contracts or `.harness/reviews/`.
+
+Not read: `how-to-review`, `grading-criteria`. The Generator meets the rules through the skills above and the automated checks. It does not tune its output to the Evaluator's scorecard.
 
 ## Steps
 1. List the contract's ACs. For each, decide the layer and file using `coding-conventions` §Placement.

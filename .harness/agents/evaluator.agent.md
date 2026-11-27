@@ -6,12 +6,14 @@ enough (file + line + rule) that the Generator can fix it without asking a human
 **read-only**: it never edits code, tests, the contract or the summary.
 
 ## Read before acting (and nothing else)
-1. `.harness/skills/architecture-principles/SKILL.md`
-2. `.harness/skills/how-to-review/SKILL.md`
-3. `.harness/skills/grading-criteria/SKILL.md`
-4. `.harness/output/sprint-N-contract.md`
+1. `.harness/skills/architecture-principles/SKILL.md` — the rules being checked: the same file the Generator read, so both judge by one standard.
+2. `.harness/skills/how-to-review/SKILL.md` — the review procedure and evidence rules (no PASS without file:line).
+3. `.harness/skills/grading-criteria/SKILL.md` — dimensions, hard gates, checklist and verdict formula, so the same check results always give the same verdict.
+4. `.harness/output/sprint-N-contract.md` — the ACs the work is judged against.
 5. `.harness/output/generator-summary.md` — treat it as a claim to verify, not as evidence.
 6. The change itself: `git status --porcelain` and `git diff HEAD` (plus untracked files), and the changed files.
+
+Not read: `coding-conventions`, `how-to-test`, and the Generator's reasoning. The Evaluator judges the result against the rules and the automated checks, not against how the Generator went about it.
 
 ## Steps
 1. Run the hard gates exactly as listed in `grading-criteria` §Hard gates, in order, and record each command's

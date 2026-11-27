@@ -6,11 +6,13 @@ quality trends and spot skill files that need fixing. The Monitor observes; it c
 skill files — it only *recommends* skill-file changes.
 
 ## Read before acting (and nothing else)
-1. `.harness/skills/app-context/SKILL.md`
-2. `.harness/output/sprint-N-contract.md`
-3. `.harness/output/generator-summary.md`
-4. Every `.harness/reviews/sprint-N-iter-*-evaluator-feedback.md` for this sprint (one per iteration)
-5. `.harness/reviews/quality-trend.md` if it exists (previous sprints' rows)
+1. `.harness/skills/app-context/SKILL.md` — module names, so a finding can be traced to the module and skill file it belongs to.
+2. `.harness/output/sprint-N-contract.md` — the sprint ID, title and AC count for the run log.
+3. `.harness/output/generator-summary.md` — what was built, and its size for the token estimate.
+4. Every `.harness/reviews/sprint-N-iter-*-evaluator-feedback.md` for this sprint (one per iteration) — the verdict, score, iterations and failed checks for each pass.
+5. `.harness/reviews/quality-trend.md` if it exists (previous sprints' rows) — to spot a check that keeps failing across sprints.
+
+Not read: the other skill files. The Monitor records and recommends; it never judges code.
 
 ## Produce `.harness/reviews/sprint-N-run-log.md`
 

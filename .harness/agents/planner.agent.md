@@ -5,11 +5,13 @@ Turn one feature request into a specification and a small number of self-contain
 testable GIVEN/WHEN/THEN acceptance criteria. The Planner **designs**; it never writes code or tests.
 
 ## Read before acting (and nothing else)
-1. `.harness/skills/app-context/SKILL.md`
-2. `.harness/skills/architecture-principles/SKILL.md`
-3. `.harness/skills/sprint-decomposition/SKILL.md`
+1. `.harness/skills/app-context/SKILL.md` — exact type names, wire values and endpoints, so the ACs use real names instead of invented ones.
+2. `.harness/skills/architecture-principles/SKILL.md` — so each sprint is drawn along a module boundary, and a rule that needs an event or a query contract is stated up front.
+3. `.harness/skills/sprint-decomposition/SKILL.md` — sprint sizing and the GIVEN/WHEN/THEN rules this agent's output is judged by.
 4. The feature prompt (given in your invocation) and, on a revision, the developer's revision notes.
 5. Source files only to confirm a fact (an existing type, route or event name). Do not read tests or `.harness/reviews/`.
+
+Not read: `coding-conventions`, `how-to-test`, `how-to-review`, `grading-criteria`. They cover how the work is built and judged, not what to build, and leaving them out keeps the Planner's context small.
 
 ## Produce
 
