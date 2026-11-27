@@ -2,6 +2,25 @@
 
 The StoreOps reference codebase for the Build Track capstone. It is a REST API for retail store operations: an ASP.NET Core minimal-API modular monolith with five modules, in-memory storage and stub business logic. It implements the base surface in spec §3.6 and enforces the architecture rules in §3.5 with automated checks.
 
+## For the evaluator
+
+**Assessment document (screenshots):**
+[`docs/244121_AI-Native_Technology_ArchitectBuild-AWSJobEvaluation.docx`](docs/244121_AI-Native_Technology_ArchitectBuild-AWSJobEvaluation.docx).
+It shows the running application, the full demo run, the GitHub audit trail and the CI run.
+
+| Deliverable | Where |
+|---|---|
+| Orchestrator | [`CLAUDE.md`](CLAUDE.md) |
+| Agent definitions (planner, generator, evaluator, monitor) | [`.harness/agents/`](.harness/agents/) |
+| Skill files (7) | [`.harness/skills/`](.harness/skills/) |
+| Audit trail of the harness run (spec, contracts, evaluator feedback, run logs) | [`.harness/reviews/`](.harness/reviews/) |
+| Feature prompt | [`PROMPT.md`](PROMPT.md) |
+| Design brief | [`DESIGN_BRIEF.md`](DESIGN_BRIEF.md) |
+| Deployment evidence | [`DEPLOYMENT.md`](DEPLOYMENT.md) |
+| Reflection | [`REFLECTION.md`](REFLECTION.md) |
+| Architecture journal (optional) | [`JOURNAL.md`](JOURNAL.md) |
+| One-page overview | [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) |
+
 ## Quick start
 
 ```bash
